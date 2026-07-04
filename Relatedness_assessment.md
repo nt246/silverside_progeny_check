@@ -502,7 +502,9 @@ Still worth checking read groups, but this result is reassuring.
   inds
 
 - Assess whether the Mendelian inconsistencies occur in certain genomic
-  regions we can filter out
+  regions we can filter out. The list of Mendelian inconsistencies are
+  in
+  `/workdir/nina_july2026/silverside_progeny/vcf/all10_clean_mendel.mendel`
 
 - Figure out where the sample swap occurred, and if it was
   bioinformatically, how far we need to go back to correct it
