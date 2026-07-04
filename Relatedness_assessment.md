@@ -1,28 +1,30 @@
----
-title: "Silverside progeny relatedness test"
-format: gfm
-engine: knitr
-execute:
-  eval: false
----
+# Silverside progeny relatedness test
+
 
 ## 
 
 ## Goal:
 
-Áki's candidate de novo SNP lists don't make any sense when we're looking at the bam files in IGViewer, so I want to check if samples IDs may have been scrambled and our indication of who is related how may be mixed up
+Áki’s candidate de novo SNP lists don’t make any sense when we’re
+looking at the bam files in IGViewer, so I want to check if samples IDs
+may have been scrambled and our indication of who is related how may be
+mixed up
 
 ## Merge the two family VCFs into one 10-individual VCF
 
-Áki has shared lists of separate vcfs of called sites with the bwa-GATK pipeline for the two families.
+Áki has shared lists of separate vcfs of called sites with the bwa-GATK
+pipeline for the two families.
 
 `/fs/cbsubscb16/storage/silverside_progeny/ManualCheck/JP_bwa_GATK4_miss_g5_Fullfilt_FRMTfilt.snps.vcf.gz`
 
 `/fs/cbsubscb16/storage/silverside_progeny/ManualCheck/PJ_bwa_GATK4_miss_g5_Fullfilt_FRMTfilt.snps.vcf.gz`
 
-I want to first create a vcf of shared SNPs (the intersection (SNPs called in both), not union). I didn't have write privileges to Áki's folder, so I've copied them to here: `/workdir/nina_july2026/silverside_progeny`
+I want to first create a vcf of shared SNPs (the intersection (SNPs
+called in both), not union). I didn’t have write privileges to Áki’s
+folder, so I’ve copied them to here:
+`/workdir/nina_july2026/silverside_progeny`
 
-```{bash}
+``` bash
 
 cd /workdir/nina_july2026/silverside_progeny/vcf
 
@@ -42,21 +44,21 @@ tabix -p vcf all10.merged.vcf.gz
 
 Take the intersection
 
-```{bash}
+``` bash
 
 bcftools isec \
     -n=2 \
     -p shared_sites \
     JP_bwa_GATK4_miss_g5_Fullfilt_FRMTfilt.snps.vcf.gz \
     PJ_bwa_GATK4_miss_g5_Fullfilt_FRMTfilt.snps.vcf.gz
-
 ```
 
 This creates `shared_sites/sites.txt`
 
-Keep only those sites shared between the families (the intersection) in the merged VCF
+Keep only those sites shared between the families (the intersection) in
+the merged VCF
 
-```{bash}
+``` bash
 
 bcftools view \
     -R shared_sites/sites.txt \
@@ -69,26 +71,27 @@ tabix -p vcf all10.shared.vcf.gz
 
 Check sample names
 
-```{bash}
+``` bash
 bcftools query -l all10.shared.vcf.gz
-
 ```
 
 ## Keep only shared, clean, informative biallelic SNPs
 
 This keeps SNPs that are:
 
--   biallelic SNPs
+- biallelic SNPs
 
--   PASS variants
+- PASS variants
 
--   no missing genotypes across all 10 individuals
+- no missing genotypes across all 10 individuals
 
--   MAF \> 0.1 \[to remove noise from rare alleles - we're looking at Mendelian relationships here, not detecting de novo mutations
+- MAF \> 0.1 \[to remove noise from rare alleles - we’re looking at
+  Mendelian relationships here, not detecting de novo mutations
 
-I think Áki had already filtered for most of these criteria, so this is just removing low-frequency variants
+I think Áki had already filtered for most of these criteria, so this is
+just removing low-frequency variants
 
-```{bash}
+``` bash
 
 bcftools view \
     -m2 -M2 \
@@ -100,12 +103,11 @@ bcftools view \
     -o all10.shared.clean.snps.vcf.gz
 
 tabix -p vcf all10.shared.clean.snps.vcf.gz
-
 ```
 
 Check how many SNPs remain:
 
-```{bash}
+``` bash
 
 echo "Before filtering JP only:"
 bcftools view -H JP_bwa_GATK4_miss_g5_Fullfilt_FRMTfilt.snps.vcf.gz | wc -l
@@ -130,9 +132,10 @@ Shared, after filtering: 8314322
 
 ## Convert to PLINK
 
-I want to add SNP positions as the name for each site so I can track where
+I want to add SNP positions as the name for each site so I can track
+where
 
-```{bash}
+``` bash
 
 /programs/plink-1.9-x86_64-beta7/plink \
   --vcf all10.shared.clean.snps.vcf.gz \
@@ -148,9 +151,10 @@ The format is
 
 FamilyID IndividualID FatherID MotherID Sex Phenotype
 
-I look at `nano all10.fam` I manually edited and changed this file to contain
+I look at `nano all10.fam` I manually edited and changed this file to
+contain
 
-```{bash}
+``` bash
 cat all10_clean.fam 
 
 JP LMJF3 0 0 2 -9
@@ -163,13 +167,11 @@ PJ LMJM2 0 0 1 -9
 PJ LMPJ001 LMJM2 LMPF2 0 -9
 PJ LMPJ002 LMJM2 LMPF2 0 -9
 PJ LMPH003 LMJM2 LMPF2 0 -9
-
-
 ```
 
 ## Run Mendelian error analysis
 
-```{bash}
+``` bash
 
 /programs/plink-1.9-x86_64-beta7/plink \
   --bfile all10_clean \
@@ -180,7 +182,7 @@ PJ LMPH003 LMJM2 LMPF2 0 -9
 
 Useful outputs
 
-```{bash}
+``` bash
 
 cat all10_clean_mendel.imendel
 
@@ -199,29 +201,35 @@ cat all10_clean_mendel.imendel
 
 
 cat all10_clean_mendel.fmendel
-
 ```
 
-PLINK’s `.imendel` counts are **per individual involvement in Mendel errors**, not “errors discovered independently in that person.”
+PLINK’s `.imendel` counts are **per individual involvement in Mendel
+errors**, not “errors discovered independently in that person.”
 
-A Mendel error is detected at the **trio level**: child + father + mother. But when PLINK summarizes by individual, it increments the count for **everyone in the trio involved in that inconsistent genotype**.
+A Mendel error is detected at the **trio level**: child + father +
+mother. But when PLINK summarizes by individual, it increments the count
+for **everyone in the trio involved in that inconsistent genotype**.
 
 Interpretation of your output:
 
-```         
-JP: catastrophic inconsistency
-PJ: much lower, likely genotype noise
-```
+    JP: catastrophic inconsistency
+    PJ: much lower, likely genotype noise
 
-For PJ, the parents have higher counts than each child because each parent is involved in **three offspring trios**. A bad parental genotype can create Mendel errors with multiple offspring, so parents naturally accumulate more errors.
+For PJ, the parents have higher counts than each child because each
+parent is involved in **three offspring trios**. A bad parental genotype
+can create Mendel errors with multiple offspring, so parents naturally
+accumulate more errors.
 
-For PJ, the pattern is compatible with a correct family plus some noisy genotypes. It does **not** mean the parents themselves “failed Mendelian segregation” in isolation.
+For PJ, the pattern is compatible with a correct family plus some noisy
+genotypes. It does **not** mean the parents themselves “failed Mendelian
+segregation” in isolation.
 
-The number of Mendelian errors for JP is so high that the provided pedigree can't be correct
+The number of Mendelian errors for JP is so high that the provided
+pedigree can’t be correct
 
 ## Estimate relatedness among all 10 individuals
 
-```{bash}
+``` bash
 
 /programs/plink-1.9-x86_64-beta7/plink \
   --bfile all10_clean_ids \
@@ -232,7 +240,7 @@ The number of Mendelian errors for JP is so high that the provided pedigree can'
 
 Look at the output
 
-```{bash}
+``` bash
  FID1   IID1 FID2   IID2 RT    EZ      Z0      Z1      Z2  PI_HAT PHE       DST     PPC   RATIO
   JP  LMJF3  JP  LMPM3 OT     0  0.0000  1.0000  0.0000  0.5000  -1  0.783086  1.0000 115.6250
   JP  LMJF3  JP LMJP001 PO   0.5  0.0147  0.9853  0.0000  0.4927  -1  0.793101  1.0000 115.6250
@@ -279,31 +287,33 @@ Look at the output
   PJ LMPJ001  PJ LMPJ002 FS   0.5  0.2352  0.4917  0.2731  0.5189  -1  0.822340  1.0000 10.1310
   PJ LMPJ001  PJ LMPH003 FS   0.5  0.2588  0.5192  0.2220  0.4816  -1  0.808949  1.0000  9.7471
   PJ LMPJ002  PJ LMPH003 FS   0.5  0.3241  0.4852  0.1907  0.4333  -1  0.794172  1.0000  8.5408
-
 ```
 
-The output reports pairwise estimates of identity-by-descent (IBD) between every pair of individuals. The most informative columns are:
+The output reports pairwise estimates of identity-by-descent (IBD)
+between every pair of individuals. The most informative columns are:
 
 | Column | Interpretation |
-|------------------------------------|------------------------------------|
+|----|----|
 | **IID1, IID2** | The two individuals being compared. |
 | **PI_HAT** | Estimated proportion of the genome shared identical-by-descent. This is the primary statistic used to infer relatedness. |
 
 Typical PI_HAT values are:
 
-| Relationship                            | Expected PI_HAT             |
-|-----------------------------------------|-----------------------------|
-| Same individual                         | \~1.0                       |
-| Parent-offspring                        | \~0.5                       |
-| Full siblings                           | \~0.5 (with some variation) |
-| Half siblings / grandparent / avuncular | \~0.25                      |
-| Unrelated                               | \~0                         |
+| Relationship                            | Expected PI_HAT            |
+|-----------------------------------------|----------------------------|
+| Same individual                         | ~1.0                       |
+| Parent-offspring                        | ~0.5                       |
+| Full siblings                           | ~0.5 (with some variation) |
+| Half siblings / grandparent / avuncular | ~0.25                      |
+| Unrelated                               | ~0                         |
 
 ## Interpretation of the PJ family
 
-The PJ family shows the expected pattern for a correctly assigned pedigree.
+The PJ family shows the expected pattern for a correctly assigned
+pedigree.
 
-**Parent-offspring relationships:** All three offspring have PI_HAT values of approximately 0.49–0.50 with both parents:
+**Parent-offspring relationships:** All three offspring have PI_HAT
+values of approximately 0.49–0.50 with both parents:
 
 | Pair            | PI_HAT |
 |-----------------|--------|
@@ -314,13 +324,20 @@ The PJ family shows the expected pattern for a correctly assigned pedigree.
 | LMJM2 – LMPJ002 | 0.492  |
 | LMJM2 – LMPH003 | 0.492  |
 
-These values are exactly what is expected for true parent-offspring relationships.
+These values are exactly what is expected for true parent-offspring
+relationships.
 
-**Sibling relationships:** The three offspring are also related to one another as expected:
+**Sibling relationships:** The three offspring are also related to one
+another as expected:
 
-Full siblings are expected to have PI_HAT ≈ 0.5, although individual sibling pairs naturally vary because each sibling inherits a different combination of parental chromosomes. These values therefore support the expected full-sibling relationships.
+Full siblings are expected to have PI_HAT ≈ 0.5, although individual
+sibling pairs naturally vary because each sibling inherits a different
+combination of parental chromosomes. These values therefore support the
+expected full-sibling relationships.
 
-**Between-family comparisons:** All comparisons between JP and PJ individuals have PI_HAT values close to zero (approximately 0–0.15), consistent with the two families being unrelated.
+**Between-family comparisons:** All comparisons between JP and PJ
+individuals have PI_HAT values close to zero (approximately 0–0.15),
+consistent with the two families being unrelated.
 
 ## Interpretation of the JP family
 
@@ -328,11 +345,9 @@ In contrast, the JP family is inconsistent with the recorded pedigree.
 
 The expected pedigree is:
 
-```         
-LMJF3 + LMPM3
-        ↓
-LMJP001, LMJP004, LMJP005
-```
+    LMJF3 + LMPM3
+            ↓
+    LMJP001, LMJP004, LMJP005
 
 However, the observed relatedness does not support this.
 
@@ -351,13 +366,15 @@ but is essentially unrelated to LMJP005:
 |-----------------|--------|
 | LMJF3 – LMJP005 | 0.000  |
 
-Similarly, LMPM3 has an expected parent-offspring relationship with LMJP005:
+Similarly, LMPM3 has an expected parent-offspring relationship with
+LMJP005:
 
 | Pair            | PI_HAT |
 |-----------------|--------|
 | LMPM3 – LMJP005 | 0.495  |
 
-but substantially higher-than-expected relatedness to LMJP001 and LMJP004:
+but substantially higher-than-expected relatedness to LMJP001 and
+LMJP004:
 
 | Pair            | PI_HAT |
 |-----------------|--------|
@@ -370,34 +387,41 @@ Finally, LMJF3 and LMPM3 themselves show a first-degree relationship:
 |---------------|--------|
 | LMJF3 – LMPM3 | 0.500  |
 
-whereas the recorded pedigree indicates that they should be unrelated parents.
+whereas the recorded pedigree indicates that they should be unrelated
+parents.
 
 ### CONCLUSION
 
-**It seems that the most likely explanation is that LMJP005 is the father and LMPM3 is an offspring.**
+**It seems that the most likely explanation is that LMJP005 is the
+father and LMPM3 is an offspring.**
 
 With that swap, the key PI_HAT values make sense:
 
-```         
-LMJF3 – LMJP005   ≈ 0.00   unrelated parents
-LMJF3 – LMPM3     ≈ 0.50   parent-offspring
-LMJF3 – LMJP001   ≈ 0.49   parent-offspring
-LMJF3 – LMJP004   ≈ 0.50   parent-offspring
+    LMJF3 – LMJP005   ≈ 0.00   unrelated parents
+    LMJF3 – LMPM3     ≈ 0.50   parent-offspring
+    LMJF3 – LMJP001   ≈ 0.49   parent-offspring
+    LMJF3 – LMJP004   ≈ 0.50   parent-offspring
 
-LMJP005 – LMPM3   ≈ 0.50   parent-offspring
-LMJP005 – LMJP001 ≈ 0.50   parent-offspring
-LMJP005 – LMJP004 ≈ 0.49   parent-offspring
-```
+    LMJP005 – LMPM3   ≈ 0.50   parent-offspring
+    LMJP005 – LMJP001 ≈ 0.50   parent-offspring
+    LMJP005 – LMJP004 ≈ 0.49   parent-offspring
 
-The only slight oddity is that `LMPM3` is unusually high with `LMJP001` and `LMJP004` (\~0.60–0.65), but that is much less problematic than the original pedigree and could reflect related parents, marker ascertainment, or genotype artifacts.
+The only slight oddity is that `LMPM3` is unusually high with `LMJP001`
+and `LMJP004` (~0.60–0.65), but that is much less problematic than the
+original pedigree and could reflect related parents, marker
+ascertainment, or genotype artifacts.
 
-ChatGPT says it's very unlikely to see such high pi_hat estimates with millions of SNPs (\~8 million) in offspring of unrelated, non-inbred parents. So it's suggesting that there might have been some mixing of reads from different individuals when the bam files from the different sequencing runs were merged. We need to investigate this.
+ChatGPT says it’s very unlikely to see such high pi_hat estimates with
+millions of SNPs (~8 million) in offspring of unrelated, non-inbred
+parents. So it’s suggesting that there might have been some mixing of
+reads from different individuals when the bam files from the different
+sequencing runs were merged. We need to investigate this.
 
 ## Mendelian analysis with updated pedigree
 
 First make copy of the original .fam file and relatedness output
 
-```{bash}
+``` bash
 
 cp all10_clean.fam all10_clean_original.fam
 cp all10_clean_relatedness.genome all10_clean_original_relatedness.genome
@@ -415,12 +439,11 @@ PJ LMJM2 0 0 1 -9
 PJ LMPJ001 LMJM2 LMPF2 0 -9
 PJ LMPJ002 LMJM2 LMPF2 0 -9
 PJ LMPH003 LMJM2 LMPF2 0 -9
-
 ```
 
 Then re-run the Mendelian analysis
 
-```{bash}
+``` bash
 
 /programs/plink-1.9-x86_64-beta7/plink \
   --bfile all10_clean \
@@ -429,7 +452,7 @@ Then re-run the Mendelian analysis
   --out all10_clean_mendel
 ```
 
-```{bash}
+``` bash
 
 cat all10_clean_mendel.imendel
 
@@ -446,67 +469,75 @@ cat all10_clean_mendel.imendel
   PJ LMPH003 22445
 ```
 
-The remaining Mendel errors are at the same scale in both families, so they likely reflect genotype-call noise rather than pedigree/sample identity problems.
+The remaining Mendel errors are at the same scale in both families, so
+they likely reflect genotype-call noise rather than pedigree/sample
+identity problems.
 
 Yes — that makes **substantial contamination less likely**.
 
-If `LMPM3` were heavily contaminated or incorrectly merged, I’d expect it to show elevated Mendel errors. Instead, after fixing the pedigree, its count is right in the normal offspring range:
+If `LMPM3` were heavily contaminated or incorrectly merged, I’d expect
+it to show elevated Mendel errors. Instead, after fixing the pedigree,
+its count is right in the normal offspring range:
 
-```         
-LMPM3:   22,438
-LMJP001: 23,576
-LMJP004: 23,288
-```
+    LMPM3:   22,438
+    LMJP001: 23,576
+    LMJP004: 23,288
 
-So the high sibling PI_HAT values are more likely due to biology/estimation effects than a badly contaminated BAM.
+So the high sibling PI_HAT values are more likely due to
+biology/estimation effects than a badly contaminated BAM.
 
 I’d phrase the conclusion as:
 
-> The corrected pedigree removes the major inconsistency, and Mendelian error rates are comparable across both families. This argues against a major BAM contamination or merge problem. The elevated PI_HAT among some JP siblings remains somewhat unusual, but it does not appear to be accompanied by excess Mendelian errors, so it is less concerning.
+> The corrected pedigree removes the major inconsistency, and Mendelian
+> error rates are comparable across both families. This argues against a
+> major BAM contamination or merge problem. The elevated PI_HAT among
+> some JP siblings remains somewhat unusual, but it does not appear to
+> be accompanied by excess Mendelian errors, so it is less concerning.
 
 Still worth checking read groups, but this result is reassuring.
 
 ## Remaining things to do
 
--   Figure out if we need to account for the higher relatedness among some inds
+- Figure out if we need to account for the higher relatedness among some
+  inds
 
--   Assess whether the Mendelian inconsistencies occur in certain genomic regions we can filter out
+- Assess whether the Mendelian inconsistencies occur in certain genomic
+  regions we can filter out
 
--   Figure out where the sample swap occurred, and if it was bioinformatically, how far we need to go back to correct it
+- Figure out where the sample swap occurred, and if it was
+  bioinformatically, how far we need to go back to correct it
 
--   Figure out why Áki's candidate de novos don't match the manual inspection, even for PJ where there are no pedigree issues
+- Figure out why Áki’s candidate de novos don’t match the manual
+  inspection, even for PJ where there are no pedigree issues
 
 ## Checking read groups (to look for evidence of reads from different individuals getting merged)
 
-Nothing suspicious detected here, but we'll have to look at the approach used for mergining to see if read group names were added manually so this could mask true mix-up of bam files from different individuals
+Nothing suspicious detected here, but we’ll have to look at the approach
+used for mergining to see if read group names were added manually so
+this could mask true mix-up of bam files from different individuals
 
-```{bash}
+``` bash
 
 samtools view -H LMPM3_bwa.sorted.RG.MD.merged.bam | grep '^@RG'
 
-@RG	ID:HC3LCDSX2.L1	LB:Baym_HC3LCDSX2.L1	PL:ILLUMINA	SM:LMPM3	PU:HC3LCDSX2.L1.A00261.402
-@RG	ID:HC553DSX2.L1	LB:Baym_HC553DSX2.L1	PL:ILLUMINA	SM:LMPM3	PU:HC553DSX2.L1.A00261.408
-@RG	ID:HVCVFDSXY.L3	LB:Baym_HVCVFDSXY.L3	PL:ILLUMINA	SM:LMPM3	PU:HVCVFDSXY.L3.A00261.357
-
-
+@RG ID:HC3LCDSX2.L1 LB:Baym_HC3LCDSX2.L1    PL:ILLUMINA SM:LMPM3    PU:HC3LCDSX2.L1.A00261.402
+@RG ID:HC553DSX2.L1 LB:Baym_HC553DSX2.L1    PL:ILLUMINA SM:LMPM3    PU:HC553DSX2.L1.A00261.408
+@RG ID:HVCVFDSXY.L3 LB:Baym_HVCVFDSXY.L3    PL:ILLUMINA SM:LMPM3    PU:HVCVFDSXY.L3.A00261.357
 ```
 
-```{bash}
+``` bash
 samtools view -H LMJP001_bwa.sorted.RG.MD.merged.bam | grep '^@RG'
 
-@RG	ID:HC3LCDSX2.L1	LB:Baym_HC3LCDSX2.L1	PL:ILLUMINA	SM:LMJP001	PU:HC3LCDSX2.L1.A00261.402
-@RG	ID:HC553DSX2.L1	LB:Baym_HC553DSX2.L1	PL:ILLUMINA	SM:LMJP001	PU:HC553DSX2.L1.A00261.408
-@RG	ID:HVCVFDSXY.L3	LB:Baym_HVCVFDSXY.L3	PL:ILLUMINA	SM:LMJP001	PU:HVCVFDSXY.L3.A00261.357
+@RG ID:HC3LCDSX2.L1 LB:Baym_HC3LCDSX2.L1    PL:ILLUMINA SM:LMJP001  PU:HC3LCDSX2.L1.A00261.402
+@RG ID:HC553DSX2.L1 LB:Baym_HC553DSX2.L1    PL:ILLUMINA SM:LMJP001  PU:HC553DSX2.L1.A00261.408
+@RG ID:HVCVFDSXY.L3 LB:Baym_HVCVFDSXY.L3    PL:ILLUMINA SM:LMJP001  PU:HVCVFDSXY.L3.A00261.357
 ```
 
-```{bash}
+``` bash
 
 samtools view -H LMJP004_bwa.sorted.RG.MD.merged.bam | grep '^@RG'
 
-@RG	ID:HC3LCDSX2.L1	LB:Baym_HC3LCDSX2.L1	PL:ILLUMINA	SM:LMJP004	PU:HC3LCDSX2.L1.A00261.402
-@RG	ID:HC553DSX2.L1	LB:Baym_HC553DSX2.L1	PL:ILLUMINA	SM:LMJP004	PU:HC553DSX2.L1.A00261.408
-@RG	ID:HVCVFDSXY.L3	LB:Baym_HVCVFDSXY.L3	PL:ILLUMINA	SM:LMJP004	PU:HVCVFDSXY.L3.A00261.357
-
-
-
+@RG ID:HC3LCDSX2.L1 LB:Baym_HC3LCDSX2.L1    PL:ILLUMINA SM:LMJP004  PU:HC3LCDSX2.L1.A00261.402
+@RG ID:HC553DSX2.L1 LB:Baym_HC553DSX2.L1    PL:ILLUMINA SM:LMJP004  PU:HC553DSX2.L1.A00261.408
+@RG ID:HVCVFDSXY.L3 LB:Baym_HVCVFDSXY.L3    PL:ILLUMINA SM:LMJP004  PU:HVCVFDSXY.L3.A00261.357
 ```
