@@ -496,6 +496,458 @@ I’d phrase the conclusion as:
 
 Still worth checking read groups, but this result is reassuring.
 
+### Make bed file of regions with low mappability
+
+I’m going to use the program GenMap to estimate mappability. I’ll try to
+use the same filter Arne used for the bamsurgeon. Text from manuscript
+draft: “First, we filtered the reference genome by estimating the
+mappability across the genome using genmap v.X (REF) for 150bp kmers (-K
+150) with up to 2 mismatches (-E 2) (150,2 mappability). We only kept
+regions with unique mappability (value of 1). Second, we estimated the
+coverage for uniquely mappable windows across the genome using mosdepth
+v.X using the fast mode (–fast-mode) for each individual. We only used
+windows with a coverage of at least 20x in the one assessed individual.”
+
+I grabbed the genome from
+`/fs/cbsubscb16/storage/silverside_progeny/genome/core/Mmenidia_refgenome_anchored.all_renamed_v2_core.fasta`.
+Since I don’t have write access to that folder I copied it to my working
+directory `/workdir/nina_july2026/silverside_progeny/genome`.
+
+I then downloaded GenMap 1.3.0 with `conda install -c bioconda genmap`
+
+Then I built the index
+
+``` bash
+
+cd /workdir/nina_july2026/silverside_progeny/genome
+
+genmap index \
+    -F Mmenidia_refgenome_anchored.all_renamed_v2_core.fasta \
+    -I Mmenidia_refgenome_anchored.all_renamed_v2_core
+```
+
+Then compute mappability
+
+``` bash
+
+genmap map \
+    -K 150 \
+    -E 2 \
+    -I Mmenidia_refgenome_anchored.all_renamed_v2_core \
+    -O Mmenidia_refgenome_anchored.all_renamed_v2_core_mappability \
+    -bg \
+    -T 16
+```
+
+Convert the bedGraph to a BED of uniquely mappable regions (mappability
+= 1) with:
+
+``` bash
+
+awk '$4==1 {print $1"\t"$2"\t"$3}' \
+Mmenidia_refgenome_anchored.all_renamed_v2_core_mappability.bedgraph \
+> Mmenidia_renamed_v2_core_uniquely_mappable.bed
+```
+
+Look at proportion retained
+
+``` bash
+
+awk '
+FNR==NR {genome+=$2; next}
+$4==1 {map+=$3-$2}
+END {
+    print "Uniquely mappable bases:", map
+    print "Genome size:", genome
+    print "Percent:", 100*map/genome
+}' Mmenidia_refgenome_anchored.all_renamed_v2_core.fasta.fai \
+Mmenidia_refgenome_anchored.all_renamed_v2_core_mappability.bedgraph
+```
+
+Uniquely mappable bases: 430587013
+
+Genome size: 462853144
+
+Percent: 93.0289
+
+Next I’ll run mosdepth
+
+``` bash
+
+cd /workdir/nina_july2026/silverside_progeny/bams
+
+mkdir -p mosdepth_1kb
+
+for bam in *.bam; do
+    sample=${bam%.bam}
+    /programs/mosdepth-0.3.11/mosdepth -t 8 -b 1000 mosdepth_1kb/${sample}.1kb "$bam"
+done
+```
+
+Then sum the read depth per 1kb window across all 10 individuals to look
+at the distribution to determine cutoffs.
+
+``` bash
+
+cd /workdir/nina_july2026/silverside_progeny/bams/mosdepth_1kb
+
+files=(*.regions.bed.gz)
+
+zcat "${files[0]}" | cut -f1-3 > windows.tmp
+
+for f in "${files[@]}"; do
+    zcat "$f" | cut -f4 > "$(basename "$f").depth.tmp"
+done
+
+paste windows.tmp *.depth.tmp | \
+awk '{
+    sum=0
+    for(i=4;i<=NF;i++) sum+=$i
+    print $1"\t"$2"\t"$3"\t"sum
+}' > all_bams.1kb.total_depth.bedgraph
+
+rm windows.tmp *.depth.tmp
+```
+
+Then get quantiles
+
+``` bash
+
+cut -f4 all_bams.1kb.total_depth.bedgraph | sort -n | awk '
+{a[NR]=$1}
+END{
+ print "N windows:", NR
+ print "p1:", a[int(NR*0.01)]
+ print "p5:", a[int(NR*0.05)]
+ print "p50:", a[int(NR*0.50)]
+ print "p95:", a[int(NR*0.95)]
+ print "p99:", a[int(NR*0.99)]
+ print "p99.5:", a[int(NR*0.995)]
+}'
+```
+
+p1: 0 p5: 224.98 p50: 531.38 p95: 738.44 p99: 1747.28 p99.5: 2602.45
+
+Based no this, I’m selected a min of 250 and max of 1750.
+
+Then make a bad-depth BED
+
+``` bash
+
+LOW=250
+HIGH=1750
+
+awk -v low=$LOW -v high=$HIGH '$4 < low || $4 > high {print $1"\t"$2"\t"$3}' \
+  all_bams.1kb.total_depth.bedgraph \
+  > all_bams.1kb.bad_depth.bed
+```
+
+Interestingly, Áki had used a depth of 8000, but I think that might be
+too high.
+
+Check the distribution of combined read depth in the vcf
+
+``` bash
+
+bcftools query -f '%INFO/DP\n' all10.shared.clean.snps.vcf.gz > all10.shared.clean_site_total_depth.txt
+```
+
+Then summarize
+
+``` bash
+
+awk '
+{sum+=$1; n++; if(min=="" || $1<min) min=$1; if($1>max) max=$1}
+END {print "n="n, "mean="sum/n, "min="min, "max="max}
+' all10.shared.clean_site_total_depth.txt
+```
+
+n=8314322 mean=1051.64 min=544 max=2492
+
+The mean of ~1000 is much higher than the p50 of mosdepth, which was
+~531. I wonder if the variant set is biased from too aggessive
+filtering, or many lower-covered windows in the mosdepth data got
+filtered out.
+
+## Filter out SNPs by mappability and mosdepth
+
+``` bash
+
+echo "Starting SNPs:"
+bcftools view -H all10.shared.clean.snps.vcf.gz | wc -l
+8314322
+
+echo "After both mappability + mosdepth:"
+bcftools view \
+  -R ../genome/Mmenidia_renamed_v2_core_uniquely_mappable.bed \
+  -T ^../bams/mosdepth_1kb/all_bams.1kb.bad_depth.bed \
+  -H all10.shared.clean.snps.vcf.gz | wc -l
+19642
+```
+
+### Filter out inversions
+
+There’s a list of inversions Azwad has used here:
+`/workdir/azwad/haplotagging_ms/docs/silverside_all_sv_regions_sorted.bed`
+
+This BED file uses `chr01`, but our VCF earlier used names like
+`Mme_chr06`. The chromosome names must match exactly, so I’ll add the
+Mme\_ prefix to all the chrom names
+
+``` bash
+
+awk 'BEGIN{OFS="\t"} NR==1 {print; next} {$1="Mme_"$1; print}' \
+/workdir/azwad/haplotagging_ms/docs/silverside_all_sv_regions_sorted.bed \
+> sv_regions_Mme.bed
+```
+
+## Filter the vcf based on mappability \< 1, exclude inversions, and filter by mosdepth.
+
+First merge the exclusion beds
+
+``` bash
+
+# There were issues with the bed file formatting, so re-writing both
+
+awk 'BEGIN{OFS="\t"} 
+     NF>=3 && $2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ {print $1,$2,$3}' \
+../bams/mosdepth_1kb/all_bams.1kb.bad_depth.bed \
+> ../bams/mosdepth_1kb/all_bams.1kb.bad_depth.clean.bed
+
+awk 'BEGIN{OFS="\t"} 
+     NF>=3 && $2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ {print $1,$2,$3}' \
+../genome/sv_regions_Mme.noheader.bed \
+> ../genome/sv_regions_Mme.clean.bed
+
+cat ../bams/mosdepth_1kb/all_bams.1kb.bad_depth.clean.bed \
+    ../genome/sv_regions_Mme.clean.bed | \
+sort -k1,1 -k2,2n | \
+bedtools merge > ../genome/mosdepth_and_sv_exclude_regions.bed
+```
+
+Now filter. I’m going to also remove sites for which any individual has
+a depth \<20. The rreason is that you’re interested in **high-confidence
+Mendelian inheritance and de novo mutation detection**. A missing or
+low-depth genotype in even one individual (especially a parent) makes
+the site much less informative. Rather than setting that genotype to
+missing and carrying around partially observed sites, it’s cleaner to
+remove the site altogether.
+
+``` bash
+
+bcftools view \
+    -R ../genome/Mmenidia_renamed_v2_core_uniquely_mappable.bed \
+    -T ^../genome/mosdepth_and_sv_exclude_regions.bed \
+    -m2 -M2 \
+    -v snps \
+    -f PASS \
+    -i 'MIN(FMT/DP)>=20' \
+    all10.shared.clean.snps.vcf.gz \
+    -Oz \
+    -o all10.shared.clean.mappability_depth_filtered.vcf.gz
+    
+    
+# Count retained SNPs
+bcftools view -H all10.shared.clean.mappability_depth_filtered.vcf.gz | wc -l
+6441729
+
+
+
+tabix -p vcf all10.shared.clean.mappability_depth_filtered.vcf.gz
+    
+```
+
+## Re-do the relatedness and Mendelian error analysis with the filtered dataset
+
+## Convert to PLINK
+
+I want to add SNP positions as the name for each site so I can track
+where
+
+``` bash
+
+/programs/plink-1.9-x86_64-beta7/plink \
+  --vcf all10.shared.clean.mappability_depth_filtered.vcf.gz \
+  --allow-extra-chr \
+  --set-missing-var-ids @:# \
+  --make-bed \
+  --out all10.shared.clean.mappability_depth_filtered
+```
+
+## Edit the `.fam` file (created by plink in the conversion)
+
+I use the updated pedigree
+
+FamilyID IndividualID FatherID MotherID Sex Phenotype
+
+``` bash
+nano all10.shared.clean.mappability_depth_filtered.fam
+
+JP LMJF3 0 0 2 -9
+JP LMPM3 LMJP005 LMJF3 0 -9
+JP LMJP001 LMJP005 LMJF3 0 -9
+JP LMJP004 LMJP005 LMJF3 0 -9
+JP LMJP005 0 0 1 -9
+PJ LMPF2 0 0 2 -9
+PJ LMJM2 0 0 1 -9
+PJ LMPJ001 LMJM2 LMPF2 0 -9
+PJ LMPJ002 LMJM2 LMPF2 0 -9
+PJ LMPH003 LMJM2 LMPF2 0 -9
+```
+
+## Run Mendelian error analysis
+
+``` bash
+
+/programs/plink-1.9-x86_64-beta7/plink \
+  --bfile all10.shared.clean.mappability_depth_filtered \
+  --allow-extra-chr \
+  --mendel \
+  --out all10.shared.clean.mappability_depth_filtered_mendel
+```
+
+Useful outputs
+
+``` bash
+
+cat all10.shared.clean.mappability_depth_filtered_mendel.imendel
+
+FID     IID   N
+  JP LMJP005 31379
+  JP   LMJF3 33866 
+  JP   LMPM3 17353
+  JP LMJP001 17877
+  JP LMJP004 17770
+  PJ   LMJM2 32613
+  PJ   LMPF2 31404 
+  PJ LMPJ001 18365
+  PJ LMPJ002 17862
+  PJ LMPH003 17062
+```
+
+## Estimate relatedness among all 10 individuals
+
+``` bash
+
+/programs/plink-1.9-x86_64-beta7/plink \
+  --bfile all10.shared.clean.mappability_depth_filtered \
+  --allow-extra-chr \
+  --genome \
+  --out all10.shared.clean.mappability_depth_filtered_relatedness
+```
+
+``` bash
+
+for chr in $(seq -w 1 24); do
+  c="Mme_chr${chr}"
+
+  bcftools view -r $c all10.shared.clean.mappability_depth_filtered.vcf.gz \
+    -Oz -o ${c}.vcf.gz
+  tabix -p vcf ${c}.vcf.gz
+
+  n=$(bcftools view -H ${c}.vcf.gz | wc -l)
+
+  /programs/plink-1.9-x86_64-beta7/plink \
+    --vcf ${c}.vcf.gz \
+    --allow-extra-chr \
+    --make-bed \
+    --out ${c}
+
+  /programs/plink-1.9-x86_64-beta7/plink \
+    --bfile ${c} \
+    --allow-extra-chr \
+    --genome \
+    --out ${c}
+
+  awk -v chr=$c -v n=$n '
+    NR>1 {
+      pair=$2"-"$4
+      print chr, n, $2, $4, $10
+    }' ${c}.genome
+done > per_chrom_PIHAT.tsv
+
+
+awk '$3=="LMPM3" && ($4=="LMJP001" || $4=="LMJP004") || \
+     $4=="LMPM3" && ($3=="LMJP001" || $3=="LMJP004") || \
+     $3=="LMJP001" && $4=="LMJP004" || \
+     $3=="LMJP004" && $4=="LMJP001"' \
+per_chrom_PIHAT.tsv
+```
+
+This didn’t get to the bottom of things. Will park this for now.
+
+## Discover de novo SNPs from the family-specific vcf
+
+### For one offspring: `LMPJ001`
+
+This finds sites where both parents are the same homozygote, `LMPJ001`
+is heterozygous, and siblings are not heterozygous.
+
+I’ll use the filters Áki describes in the manuscript
+
+\`Only variants with an allelic depth (AD) ratio between 0.25 and .75
+were considered. Also, candidate de novo variants in a progeny that had
+any level of minor allele AD value in either parent or a sibling were
+not considered. Only heterozygous variants observed in a single
+offspring, and not in either parent or sibling, were considered as
+candidate de novo mutations.
+
+BCFtools results had the following filters applied: Mann-Whitney
+rank-sum test of Mapping Quality Bias (MQB) \< 0.06, Mann-Whitney
+rank-sum test of Read Position Bias (RPB) \< 0.06, Mann-Whitney rank-sum
+test of Base Quality Bias (BQB) \< 0.06 (MQB, RPB, and BQB are unique
+fields to BCFtools). Both BCFtools and GATK4 results were filtered with
+Quality by Depth (QD)\<2.0, and average Mapping Quality (MQ) \<40.0.
+Additionally the following filters were applied to GATK4 results: strand
+bias (FS)\>60.0, Strand Odds Ratio (SOR)\>3.0,  Mann-Whitney rank-sum
+test of Mapping Quality (MQRankSum) \< -12.5, Mann-Whitney rank-sum test
+of site position within reads (ReadPosRankSum) \< -8.0. \`
+
+Then for consistency with bamsurgeon,
+
+``` bash
+
+VCF=PJ_bwa_GATK4_miss_g5_Fullfilt_FRMTfilt.snps.vcf.gz
+
+for target in LMPJ001 LMPJ002 LMPH003; do
+
+  if [ "$target" = "LMPJ001" ]; then sib1=LMPJ002; sib2=LMPH003; fi
+  if [ "$target" = "LMPJ002" ]; then sib1=LMPJ001; sib2=LMPH003; fi
+  if [ "$target" = "LMPH003" ]; then sib1=LMPJ001; sib2=LMPJ002; fi
+
+  bcftools view \
+    -m2 -M2 -v snps \
+    -i 'QD>=2.0 && MQ>=40.0 && FS<=60.0 && SOR<=3.0 && MQRankSum>=-12.5 && ReadPosRankSum>=-8.0' \
+    "$VCF" | \
+  bcftools query \
+    -s LMPF2,LMJM2,$target,$sib1,$sib2 \
+    -f '%CHROM\t%POS[\t%GT\t%DP\t%AD]\n' | \
+  awk 'BEGIN{OFS="\t"}
+  function hom(g){return g=="0/0" || g=="0|0" || g=="1/1" || g=="1|1"}
+  function het(g){return g=="0/1" || g=="1/0" || g=="0|1" || g=="1|0"}
+  function refAD(ad){split(ad,a,","); return a[1]+0}
+  function altAD(ad){split(ad,a,","); return a[2]+0}
+  function ab_ref(ad){split(ad,a,","); return (a[1]+a[2]>0) ? a[1]/(a[1]+a[2]) : 0}
+  function ab_alt(ad){split(ad,a,","); return (a[1]+a[2]>0) ? a[2]/(a[1]+a[2]) : 0}
+  $3==$6 && hom($3) && het($9) && !het($12) && !het($15) && $4>=20 && $7>=20 && $10>=20 && $13>=20 && $16>=20 && ((($3=="0/0" || $3=="0|0") && ab_alt($11)>=0.25 && ab_alt($11)<=0.75 && altAD($5)==0 && altAD($8)==0 && altAD($14)==0 && altAD($17)==0) || (($3=="1/1" || $3=="1|1") && ab_ref($11)>=0.25 && ab_ref($11)<=0.75 && refAD($5)==0 && refAD($8)==0 && refAD($14)==0 && refAD($17)==0)) {print $1, $2-1, $2}
+  ' > ${target}_cDeNovo_candidates.bed
+
+  if [ -s ${target}_cDeNovo_candidates.bed ]; then
+    bcftools view \
+      -R ${target}_cDeNovo_candidates.bed \
+      "$VCF" \
+      -Oz \
+      -o ${target}_cDeNovo_candidates.vcf.gz
+
+    tabix -p vcf ${target}_cDeNovo_candidates.vcf.gz
+  fi
+
+  echo "$target:"
+  wc -l ${target}_cDeNovo_candidates.bed
+
+done
+```
+
 ## Remaining things to do
 
 - Figure out if we need to account for the higher relatedness among some
