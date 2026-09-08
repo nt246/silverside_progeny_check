@@ -1,0 +1,463 @@
+---
+title: "RatesTool"
+format: html
+editor: visual
+---
+
+## Goal
+
+I'm going to try running [RatesTools](https://github.com/campanam/RatesTools) on our Menidia samples
+
+## Installation
+
+I want to install with conda following the instructions here: <https://github.com/campanam/RatesTools#conda-assisted-installation>
+
+I first have to get Java loaded on the BioHPC system
+
+```{bash}
+
+module load java/21.0.1
+
+curl -s https://get.nextflow.io | bash
+      N E X T F L O W
+      version 26.04.4 build 12445
+      created 17-06-2026 16:30 UTC (12:30 EDT)
+      cite doi:10.1038/nbt.3820
+      http://nextflow.io
+
+
+Nextflow installation completed. Please note:
+- the executable file `nextflow` has been created in the folder: /workdir/nina_july2026/silverside_progeny
+- you may complete the installation by moving it to a directory in your $PATH
+
+```
+
+### Get an older nextflow version that is compatible with the pipeline
+
+you installed **Nextflow 26.04.4**, which is newer than the pipeline allows. The repo’s own config caps compatibility at `<=25.10.5`.
+
+Try installing an older Nextflow:
+
+```{bash}
+
+export NXF_VER=25.10.5
+curl -s https://get.nextflow.io | bash
+mv nextflow ~/bin/nextflow-25.10.5
+
+~/bin/nextflow-25.10.5 pull campanam/RatesTools -r main
+```
+
+I'll just use that path explicitly instead of making it my default nextflow version.
+
+## Clone the repo to get the config file
+
+```{bash}
+
+git clone https://github.com/campanam/RatesTools
+mv RatesTools/*config* RatesTools_LMPJ001
+
+```
+
+## Prepare the list of fastqs
+
+Trimmed fastq's (3 per sample) are located here `/fs/cbsubscb16/storage/silverside_progeny/batch_full/trimmed`
+
+Made a sample table. The pipeline expects fq.gz, but trimmed files are not zipped. We should not store uncompressed fastq's anyway, so I'll compress them first with
+
+```{bash}
+pigz -p 8 *.fastq
+```
+
+LMPJ001_fastq.csv (I'm looking just at a single offspring now LMPJ001, so included that and its parents).
+
+## Setting up the config file
+
+Followed the prompts from
+
+```{bash}
+bash configure.sh
+```
+
+Most things got configured, except
+
+java
+
+ruby
+
+sambamba
+
+repeatModeler
+
+When I started running the pipeline, I also got errors about getting mapgen from conda, so I edited the configure file to use the version installed on the BioHPC.
+
+For the first three, I added the path to a run script.
+
+```{bash}
+
+cat run_ratestools.sh 
+
+#!/bin/bash
+
+module load java/21.0.1
+
+export PATH=/programs/sambamba-0.7.1:$PATH
+export PATH=/programs/ruby/bin:$PATH
+export PATH=/lustre2/home/nt246_0001/nt246/software/miniforge3/bin/genmap:$PATH
+
+echo "GenMap used by script:"
+which genmap
+genmap --version
+
+~/bin/nextflow-25.10.5 run campanam/RatesTools \
+  -r main \
+  -c nextflow.config \
+  -profile conda \
+  -resume
+
+
+```
+
+I had to manually edit the `nextflow.config` file in several ways because of differences in syntax (seems like it was written for Mac, I'm running on Linux)
+
+I replaced
+
+```{bash}
+#Replace
+refseq = "$launchDir/ref.fa"
+
+#with full path 
+refseq = "/full/path/to/your/reference.fa"
+
+#same for the csv with sample id's
+
+# Also provided the full path to the mapgen installed on BioHPC
+withName: 'genMapIndex|genMapMap' {
+    conda = null
+    beforeScript = 'export PATH=/path/to/genmap:$PATH'
+}
+
+# I also increased the CPU as it was only running on one thread
+
+
+```
+
+I also
+
+```         
+screen -S ratestools
+```
+
+## Edit GATK4 to run by chromosome
+
+The original setup would run one chromosome at the time for GATK4. After running for 4 full days, it had only progressed through \~38% of the chroms. Need to speed it up. So used ChatGPT to edit the `ratestools.nf` file.
+
+I have a cloned version of the repo with the `ratestools.nf` file here: `/workdir/nina_july2026/silverside_progeny/RatesTools`
+
+As per the installation instructions, I had copied the config files into a separate working directory that I've been running the process from `/workdir/nina_july2026/silverside_progeny/RatesTools_LMPJ001`
+
+I will update my run_ratestools.sh to specify where to read the nextflow file from
+
+```{bash}
+
+cd /workdir/nina_july2026/silverside_progeny/RatesTools_LMPJ001
+
+~/bin/nextflow-25.10.5 run \
+  /workdir/nina_july2026/silverside_progeny/RatesTools \
+  -c nextflow.config \
+  -profile conda \
+  -resume
+```
+
+Copy a backup
+
+```{bash}
+
+cd /workdir/nina_july2026/silverside_progeny/RatesTools
+
+cp ratestools.nf ratestools.nf.before_scatter
+```
+
+Create the chromosome interval file
+
+```{bash}
+cd /workdir/nina_july2026/silverside_progeny/RatesTools_LMPJ001
+
+cut -f1 \
+  /workdir/nina_july2026/silverside_progeny/genome/Mmenidia_refgenome_anchored.all_renamed_v2_core.fasta.fai \
+  > hc_intervals.txt
+  
+cat hc_intervals.txt
+wc -l hc_intervals.txt
+```
+
+Add the interval path `hc_intervals = "/workdir/nina_july2026/silverside_progeny/RatesTools_LMPJ001/hc_intervals.txt"` to `nextflow.config`
+
+```{bash}
+params {
+
+        refseq = "/workdir/nina_july2026/silverside_progeny/genome/Mmenidia_refgenome_anchored.all_renamed_v2_core.fasta" // Reference sequence
+        libraries = "/workdir/nina_july2026/silverside_progeny/RatesTools_LMPJ001/LMPJ001_fastq.csv" // File detailing sample reads
+        readDir = "/fs/cbsubscb16/storage/silverside_progeny/batch_full/trimmed/" // Path to reads
+        hc_intervals = "/workdir/nina_july2026/silverside_progeny/RatesTools_LMPJ001/hc_intervals.txt"
+        bwa_alg = "" // algorithm for BWA index. Value "" permits BWA to infer algorithm
+        markDuplicates = "picard" // Choice of "picard", "samtools" or "sambamba" for markDuplicates
+        picard_conda = false // Install Picard via Nextflow Conda handling
+        picard = "$launchDir/picard.jar" // Path for Picard jar file. Ignore if using Conda-installed Picard.
+        picard_java = "" // Java options for Picard
+        gatk_conda = false // Install GATK via Nextflow Conda handling
+
+...
+```
+
+Need to change `params.run_repeatmodeler = true/false` switch
+
+## Compare to Armstrong ms
+
+I may also need to adjust the depth filters. Review mosdepth and depth on vcfs
+
+We discarded scaffolds that were shorter than 100,000 bp before site- and region- filtering and those that were less than 10,000 bp after filtering.
+
+Additional parameters they used for dnm_opts
+
+--kochDNp --minAD1 --minAF 0.3”.
+
+\[seems like I should add those\]
+
+<https://github.com/campanam/RatesTools/blob/main/doc/ruby_r_scripts.md#calc_denovo_mutation_raterb>
+
+## Initial analysis of the vcf files
+
+First, I checked how many sites we have in our unfiltered vcf. I confirmed that it's the same in `/workdir/nina_july2026/silverside_progeny/RatesTools_LMPJ001/test_results/03_CombinedVCF` and
+
+`/workdir/nina_july2026/silverside_progeny/RatesTools_LMPJ001/test_results/06_FilterChrVCFs`
+
+```{bash}
+bcftools stats test_combined.vcf.gz > stats.txt
+
+grep "^SN" stats.txt
+
+SN	0	number of samples:	3
+SN	0	number of records:	462853144
+SN	0	number of no-ALTs:	437473055
+SN	0	number of SNPs:	15011745
+SN	0	number of MNPs:	0
+SN	0	number of indels:	3309718
+SN	0	number of others:	0
+SN	0	number of multiallelic sites:	1416045
+SN	0	number of multiallelic SNP sites:	242256
+
+```
+
+Compare to number of sites in the genome
+
+```{bash}
+awk '{sum += $2} END {print sum}' /fs/cbsubscb16/storage/silverside_progeny/genome/core/Mmenidia_refgenome_anchored.all_renamed_v2_core.fasta.fai 
+462853144
+```
+
+So the "number of records" in the stats.txt is not the callable genome, just the total number of sites in the fasta reference.
+
+Now filter the vcf according to the filters used in the Armstrong paper (may need to adjust depths later)
+
+```{bash}
+
+# Use vcftools because it mirrors the RatesTools pipeline, and also handles filtering on individual genotypes better than bcftools
+vcftools \
+  --gzvcf test_combined.vcf.gz \
+  --minDP 20 \
+  --minGQ 65 \
+  --maxDP 250 \
+  --max-missing 1 \
+  --min-alleles 1 \
+  --max-alleles 2 \
+  --recode \
+  --recode-INFO-all \
+  --stdout | bgzip > test_combined_filtered.vcf.gz
+  
+# Index file
+bcftools index -f -t test_combined_filtered.vcf.gz
+
+# Use GATK hard filtering (only marks sites, doesn't remove)
+gatk VariantFiltration \
+  -R /fs/cbsubscb16/storage/silverside_progeny/genome/core/Mmenidia_refgenome_anchored.all_renamed_v2_core.fasta \
+  -V test_combined_filtered.vcf.gz \
+  -O test_combined_filtered.gatk.vcf.gz \
+  --filter-name "filter" \
+  --filter-expression "QD < 4.0 || FS > 60.0 || MQ < 40.0 || SOR > 3.0 || ReadPosRankSum < -3.0 || ReadPosRankSum > 3.0 || MQRankSum < -2.0"  
+
+
+# Retain only sites with PASS
+bcftools view \
+  -f PASS,. \
+  test_combined_filtered.gatk.vcf.gz \
+  -Oz -o test_combined_filtered.gatk.PASS.vcf.gz
+
+bcftools index -t test_combined_filtered.gatk.PASS.vcf.gz
+```
+
+```{bash}
+
+# Stats just after bcftools filters
+
+SN	0	number of samples:	3
+SN	0	number of records:	382483321
+SN	0	number of no-ALTs:	364765966
+SN	0	number of SNPs:	11406197
+SN	0	number of MNPs:	0
+SN	0	number of indels:	1952369
+SN	0	number of others:	0
+SN	0	number of multiallelic sites:	0
+SN	0	number of multiallelic SNP sites:	0
+
+
+# Stats after bcftools filtering, GATK filters, only retaining PASS sites
+
+bcftools stats test_combined_filtered.gatk.PASS.vcf.gz > stats_test_combined_filtered.gatk.PASS.txt
+
+grep "^SN" stats_test_combined_filtered.gatk.PASS.txt
+
+SN	0	number of samples:	3
+SN	0	number of records:	377354461
+SN	0	number of no-ALTs:	364667014
+SN	0	number of SNPs:	10877529
+SN	0	number of MNPs:	0
+SN	0	number of indels:	1809912
+SN	0	number of others:	0
+SN	0	number of multiallelic sites:	0
+SN	0	number of multiallelic SNP sites:	0
+```
+
+## Calculate de novo mutations
+
+```{bash}
+
+bcftools query \
+  -s LMPJ001,LMJM2,LMPF2 \
+  -f '%CHROM\t%POS\t%REF\t%ALT[\t%SAMPLE=%GT:%AD]\n' \
+  test_combined_filtered.gatk.PASS.vcf.gz |
+awk -F'\t' '
+BEGIN {
+    OFS="\t"
+    print "CHROM","POS","REF","ALT","LMPJ001_GT","LMPJ001_AD","ALT_RATIO","LMJM2_GT","LMJM2_AD","LMPF2_GT","LMPF2_AD"
+}
+{
+    delete gt
+    delete ad
+
+    for (i=5; i<=NF; i++) {
+        split($i, sampleField, "=")
+        sample = sampleField[1]
+        split(sampleField[2], values, ":")
+        gt[sample] = values[1]
+        ad[sample] = values[2]
+    }
+
+    split(ad["LMPJ001"], childAD, ",")
+    split(ad["LMJM2"], parent1AD, ",")
+    split(ad["LMPF2"], parent2AD, ",")
+
+    childHet = (gt["LMPJ001"]=="0/1" || gt["LMPJ001"]=="1/0" || gt["LMPJ001"]=="0|1" || gt["LMPJ001"]=="1|0")
+    childDepth = childAD[1] + childAD[2]
+    childRatio = childDepth > 0 ? childAD[2] / childDepth : -1
+
+    parentsRef = ((gt["LMJM2"]=="0/0" || gt["LMJM2"]=="0|0") && (gt["LMPF2"]=="0/0" || gt["LMPF2"]=="0|0") && parent1AD[2]==0 && parent2AD[2]==0)
+
+    parentsAlt = ((gt["LMJM2"]=="1/1" || gt["LMJM2"]=="1|1") && (gt["LMPF2"]=="1/1" || gt["LMPF2"]=="1|1") && parent1AD[1]==0 && parent2AD[1]==0)
+
+    if (childHet && childRatio>=0.25 && childRatio<=0.75 && (parentsRef || parentsAlt)) {
+        print $1,$2,$3,$4,gt["LMPJ001"],ad["LMPJ001"],childRatio,gt["LMJM2"],ad["LMJM2"],gt["LMPF2"],ad["LMPF2"]
+    }
+}' > LMPJ001_denovo_candidates_filtered_gatkPASS.tsv
+
+
+sed -i '1iCHROM\tPOS\tREF\tALT\tLMPJ001_GT\tLMPJ001_AD\tLMPJ001_ALT_ratio\tLMJM2_GT\tLMJM2_AD\tLMPF2_GT\tLMPF2_AD' \
+  LMPJ001_denovo_candidates_filtered_gatkPASS.tsv
+  
+
+```
+
+```{bash}
+
+
+bcftools mpileup \
+  -f /fs/cbsubscb16/storage/silverside_progeny/genome/core/Mmenidia_refgenome_anchored.all_renamed_v2_core.fasta \
+  -a FORMAT/AD,FORMAT/DP \
+  -d 10000 \
+  -Ou \
+  LMJM2_bwa.sorted.RG.MD.merged.bam \
+  LMPF2_bwa.sorted.RG.MD.merged.bam \
+  LMJP001_bwa.sorted.RG.MD.merged.bam |
+bcftools call \
+  -m \
+  -v \
+  -Oz \
+  -o LMJP001_trio.bcftools.vcf.gz
+  
+  
+
+# Retaining only reads with mapQ > 30  
+  
+bcftools mpileup \
+  -f /fs/cbsubscb16/storage/silverside_progeny/genome/core/Mmenidia_refgenome_anchored.all_renamed_v2_core.fasta \
+  -a FORMAT/AD,FORMAT/DP \
+  -d 10000 \
+  -q 30 \
+  --excl-flags UNMAP,SECONDARY,QCFAIL,DUP,SUPPLEMENTARY \
+  -Ou \
+  LMJM2_bwa.sorted.RG.MD.merged.bam \
+  LMPF2_bwa.sorted.RG.MD.merged.bam \
+  LMJP001_bwa.sorted.RG.MD.merged.bam | \
+bcftools call \
+  -m \
+  -v \
+  -Oz \
+  -o ../vcf/LMJP001_trio.bcftools.mapq30.vcf.gz
+```
+
+## Check for Mendelian errors
+
+```{bash}
+
+/programs/plink-1.9-x86_64-beta7/plink \
+  --vcf LMJP001_trio.bcftools.mapq30.vcf.gz \
+  --allow-extra-chr \
+   --set-missing-var-ids @:#:\$1:\$2 \
+  --make-bed \
+  --out LMJP001_trio.bcftools.mapq30
+
+
+# edit the .fam
+
+# Filter the vcf
+
+bcftools view \
+  -m2 -M2 -v snps \
+  -i 'QUAL>=30 && FMT/DP>=30 && FMT/DP<=250 && COUNT(GT="mis")==0' \
+  -Oz \
+  -o LMJP001_trio.bcftools.mapq30.filtered.vcf.gz \
+  LMJP001_trio.bcftools.mapq30.vcf.gz
+  
+# Remake plink
+
+# edit the .fam
+
+
+
+/programs/plink-1.9-x86_64-beta7/plink \
+  --bfile LMJP001_trio.bcftools.mapq30.filtered \
+  --allow-extra-chr \
+  --mendel \
+  --out LMJP001_trio.bcftools.mapq30.filtered
+```
+
+## Compare RatesTools de novo candidates to bcftools calls
+
+/workdir/nina_july2026/silverside_progeny/RatesTools_LMPJ001/test_results/15_SummarizeDNMLogs/test_offspringLMPJ001_chrMme_candidates.vcf.gz
+
+/workdir/nina_july2026/silverside_progeny/vcf/LMJP001_trio.bcftools.vcf.gz
+
+The RatesTools output file contains **VCF records but no VCF header**. That is why `bcftools` reports “unknown file type.”
+
+```{bash}
+
+```
